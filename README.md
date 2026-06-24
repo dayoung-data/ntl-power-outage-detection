@@ -168,8 +168,7 @@ Targets are configured in the `targets` list at the bottom of the script.
 
 ## Stack
 
-`Python` `Google Earth Engine` `NASA Black Marble (VNP46A2)` `ESA WorldCover` `ERA5` `scikit-learn` `pandas` `matplotlib`
-
+Python Google Earth Engine NASA Black Marble (VNP46A2) ESA WorldCover ERA5 pandas matplotlib statsmodels
 ---
 
 ## Context
