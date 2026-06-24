@@ -36,6 +36,36 @@ Undetected cases were systematically categorized — not discarded:
 
 ---
 
+## Two Detection Approaches
+
+This project explored two fundamentally different detection strategies, motivated by a key failure case: **Houston Winter Storm Uri (Feb 2021)**.
+
+v4's time-series approach completely missed it — snow reflection caused mean radiance to *increase*, masking the outage signal entirely. The pixel-ratio approach caught it.
+
+| | Approach 1: Time-series (v4/v5) | Approach 2: Pixel Ratio |
+|---|---|---|
+| Signal | Mean radiance drop vs. baseline | % of pixels that darkened vs. baseline |
+| Baseline | 26-week DOW rolling median | 30-day spatial median (sandwich variant) |
+| Strength | Long-duration, large-scale outages | Albedo-affected & spatially patchy outages |
+| Weakness | Snow reflection inflates mean radiance | Requires high pixel reliability |
+| Houston Uri ❄️ | ❌ Not detected | ✅ Spike detected |
+
+**Sandwich baseline** (pixel approach): during a known outage window, the baseline is constructed from pre-outage (−15d) and post-recovery (+15d) periods, avoiding contamination — the same motivation as the 2-Pass method in v4, applied spatially.
+
+### Validation Cases
+
+**Houston Winter Storm Uri (Feb 2021) — Albedo failure**
+- v4: ❌ Snow reflection caused mean radiance to *increase*, completely masking the outage
+- Pixel ratio: ✅ Spatial darkening spike detected at event date
+- Key insight: when total brightness goes *up* due to snow, pixel-level counting still sees the dark patches
+
+**Japan Osaka Typhoon Jebi (Sep 2018) — Low radiance drop**
+- v4: ❌ Not detected (radiance drop below threshold)
+- Pixel ratio: ✅ Spatial outage spike detected at Sep 2018 event window
+- Note: false positives present in non-event periods — threshold tuning in progress; demonstrates sensitivity before precision optimization
+
+---
+
 ## Methodology
 
 ### Data Sources
@@ -80,10 +110,14 @@ Detection Result + Recovery Curve
 ntl-power-outage-detection/
 │
 ├── src/
-│   ├── po_detect_v4.py            # Main detection pipeline
-│   ├── po_detect_v4_graph.py      # Visualization module
-│   ├── po_detect_v4_non_cy.py     # Non-cyclone event extension
-│   └── po_detect_v5_era5.py       # ERA5 + Isolation Forest (v5)
+│   ├── timeseries/                    # Approach 1: Time-series radiance
+│   │   ├── po_detect_v4.py            # Main detection pipeline
+│   │   ├── po_detect_v4_graph.py      # Visualization module
+│   │   ├── po_detect_v4_non_cy.py     # Non-cyclone event extension
+│   │   └── po_detect_v5_era5.py       # ERA5 + Isolation Forest (v5)
+│   │
+│   └── pixel_ratio/                   # Approach 2: Pixel-level darkening ratio
+│       └── pixel_outage_ratio.py      # Sandwich baseline + spatial outage ratio
 │
 ├── tools/
 │   ├── baseline_comparison.py     # Benchmarks 4 baseline strategies
