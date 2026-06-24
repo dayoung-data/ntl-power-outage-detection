@@ -174,4 +174,10 @@ Targets are configured in the `targets` list at the bottom of the script.
 
 ## Context
 
-Developed during a data science internship at the **International Energy Agency (IEA)**, Paris, as part of a global power outage ground truth dataset project. The pipeline was independently designed, implemented, and validated end-to-end.
+Developed independently over ~4 months (Jan–Jun 2026) during a 
+data science internship at the International Energy Agency (IEA), Paris, 
+alongside other project deliverables.
+
+The pipeline — from initial concept to dual-method validation across 
+58 global events — was designed, implemented, and iterated end-to-end 
+as a self-driven research effort.
