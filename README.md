@@ -7,7 +7,7 @@ Built as part of an IEA × ESA collaboration to support global energy resilience
 
 ## What This Does
 
-When a major disaster strikes - a typhoon, earthquake, or extreme weather event — the lights go out. This pipeline detects those outages automatically by analyzing changes in nighttime light (NTL) radiance from satellite imagery, validated across **58 real-world disaster events** spanning 2017–2025.
+When a major disaster strikes ; a typhoon, earthquake, or extreme weather event — the lights go out. This pipeline detects those outages automatically by analyzing changes in nighttime light (NTL) radiance from satellite imagery, validated across **58 real-world disaster events** spanning 2017–2025.
 
 ---
 
