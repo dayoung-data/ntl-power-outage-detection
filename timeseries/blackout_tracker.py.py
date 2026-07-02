@@ -1,21 +1,20 @@
 # -*- coding: utf-8 -*-
 """
-NTL Power Outage Detector — v4 (Balanced Outage Detector)
-==========================================================
+blackout_tracker.py — NTL Power Outage Detector (Balanced, 2-Pass)
+====================================================================
 Addresses the precision-recall tradeoff issue in v3 (recall collapse)
 by relaxing thresholds to a balanced level.
 
-Key changes from v3:
-  Fix 1 — Singleton condition diversified (OR patterns)
-      Pattern A: Near-total blackout  (drop>80% & obs>0.5 & z<-3.5)
-      Pattern B: Strong statistical signal (drop>60% & obs>0.7 & z<-5.0)
-  Fix 2 — Sustained detection relaxed: 3-day window, 2-day minimum (was 5/3)
-      Allows fast recovery events and partial cloud days
-  Fix 3 — obs_ratio threshold relaxed
-      Standard detection: 0.5 → 0.4 (recover low-observation regions)
-      Tier 2 backdoor:    0.5 → 0.1 (allow thin cloud pass-through in extremes)
+Fix 1 — Singleton condition diversified (OR patterns)
+    Pattern A: Near-total blackout  (drop>80% & obs>0.5 & z<-3.5)
+    Pattern B: Strong statistical signal (drop>60% & obs>0.7 & z<-5.0)
+Fix 2 — Sustained detection relaxed: 3-day window, 2-day minimum (was 5/3)
+    Allows fast recovery events and partial cloud days
+Fix 3 — obs_ratio threshold relaxed
+    Standard detection: 0.5 -> 0.4 (recover low-observation regions)
+    Tier 2 backdoor:    0.5 -> 0.1 (allow thin cloud pass-through in extremes)
 
-Validated against 58 global disaster events (2017–2025).
+Validated against 58 global disaster events (2017-2025).
 """
 
 import sys
@@ -34,13 +33,9 @@ from statsmodels.tsa.seasonal import STL
 import ee
 import urllib.request
 
-# Use a universally available font
 plt.rcParams['font.family'] = 'DejaVu Sans'
 plt.rcParams['axes.unicode_minus'] = False
 
-# =============================================================================
-# GEE Initialization
-# =============================================================================
 current_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(os.path.join(current_dir, '..', '..'))
 
@@ -55,7 +50,7 @@ except Exception as e:
 # =============================================================================
 # Output directory
 # =============================================================================
-OUTPUT_DIR = os.path.join(current_dir, '..', '..', 'outputs', 'v4')
+OUTPUT_DIR = os.path.join(current_dir, '..', '..', 'outputs', 'blackout_tracker')
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 
@@ -64,7 +59,7 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 # =============================================================================
 def dow_median_baseline_masked(series, mask_out=None, window_weeks=26, min_periods=4):
     """
-    Compute a day-of-week rolling median baseline.
+    Day-of-week rolling median baseline.
     Optionally exclude contaminated periods (e.g. outage windows) via mask_out.
     """
     s = series.copy()
@@ -118,34 +113,34 @@ def robust_zscore(series, baseline, trim_quantile=0.1):
 
 
 # =============================================================================
-# Core Logic: Balanced 2-Pass Baseline + Detection (v4)
+# Core Logic: Balanced 2-Pass Baseline + Detection
 # =============================================================================
-def two_pass_baseline_and_detection_v4(df,
-                                       z_thresh=-3.0,
-                                       drop_thresh_normal=10.0,
-                                       drop_thresh_extreme=50.0,
-                                       window_weeks=26,
-                                       snow_thresh=0.2,
-                                       mask_expand_days=7,
-                                       sustained_window=3,
-                                       sustained_min_days=2,
-                                       tier1_obs_thresh=0.4,
-                                       tier2_obs_lower=0.1,
-                                       tier2_pixel_min=20,
-                                       tier2_drop_min=80.0,
-                                       tier2_z_max=-4.0):
+def two_pass_baseline_and_detection(df,
+                                    z_thresh=-3.0,
+                                    drop_thresh_normal=10.0,
+                                    drop_thresh_extreme=50.0,
+                                    window_weeks=26,
+                                    snow_thresh=0.2,
+                                    mask_expand_days=7,
+                                    sustained_window=3,
+                                    sustained_min_days=2,
+                                    tier1_obs_thresh=0.4,
+                                    tier2_obs_lower=0.1,
+                                    tier2_pixel_min=20,
+                                    tier2_drop_min=80.0,
+                                    tier2_z_max=-4.0):
     """
     2-Pass baseline to avoid outage-period contamination.
 
     Pass 1: Build initial baseline (may be contaminated by outage signal)
-            → identify candidate dip periods
+            -> identify candidate dip periods
     Pass 2: Recompute baseline with dip periods masked out (clean baseline)
-            → run final detection on clean baseline
+            -> run final detection on clean baseline
     """
     radiance = df['radiance_main']
     radiance_for_base = radiance.where(df['valid_for_baseline'])
 
-    # ── Pass 1: contaminated baseline ────────────────────────────────────────
+    # -- Pass 1: contaminated baseline ------------------------------------
     baseline_p1 = dow_median_baseline_masked(radiance_for_base, mask_out=None, window_weeks=window_weeks)
     drop_p1 = ((baseline_p1 - radiance) / baseline_p1) * 100
     z_p1 = robust_zscore(radiance, baseline_p1)
@@ -168,18 +163,15 @@ def two_pass_baseline_and_detection_v4(df,
 
     sustained_p1 = dip_candidate_p1.rolling(window=sustained_window, min_periods=sustained_min_days).sum() >= sustained_min_days
 
-    # Singleton OR patterns (Fix 1)
     pattern_A_p1 = (drop_p1 > 80.0) & (df['obs_ratio_main'] > 0.5) & (z_p1 < -3.5)
     pattern_B_p1 = (drop_p1 > 60.0) & (df['obs_ratio_main'] > 0.7) & (z_p1 < -5.0)
     cond_singleton_p1 = ((pattern_A_p1 | pattern_B_p1) & snow_ok).fillna(False)
 
     dip_mask_p1 = (sustained_p1 & dip_candidate_p1) | cond_singleton_p1
-
-    # Expand mask to cover surrounding days
     dip_mask_expanded = (dip_mask_p1.astype(int)
                          .rolling(window=mask_expand_days, center=True, min_periods=1).max().astype(bool))
 
-    # ── Pass 2: clean baseline ────────────────────────────────────────────────
+    # -- Pass 2: clean baseline -------------------------------------------
     baseline_p2 = dow_median_baseline_masked(radiance_for_base, mask_out=dip_mask_expanded, window_weeks=window_weeks)
     drop_p2 = ((baseline_p2 - radiance) / baseline_p2) * 100
     z_p2 = robust_zscore(radiance, baseline_p2)
@@ -206,17 +198,16 @@ def two_pass_baseline_and_detection_v4(df,
 
     is_dip_main = (sustained & is_dip_candidate) | cond_singleton_ok
 
-    # Store results back into df
-    df['baseline_dow_p1']    = baseline_p1
-    df['baseline_dow']       = baseline_p2
-    df['drop_pct_main_p1']   = drop_p1
-    df['drop_pct_main']      = drop_p2
-    df['z_main_p1']          = z_p1
-    df['z_main']             = z_p2
-    df['is_dip_p1']          = dip_mask_p1
-    df['is_dip_p1_expanded'] = dip_mask_expanded
-    df['is_dip_candidate']   = is_dip_candidate
-    df['is_dip_main']        = is_dip_main
+    df['baseline_dow_p1']     = baseline_p1
+    df['baseline_dow']        = baseline_p2
+    df['drop_pct_main_p1']    = drop_p1
+    df['drop_pct_main']       = drop_p2
+    df['z_main_p1']           = z_p1
+    df['z_main']              = z_p2
+    df['is_dip_p1']           = dip_mask_p1
+    df['is_dip_p1_expanded']  = dip_mask_expanded
+    df['is_dip_candidate']    = is_dip_candidate
+    df['is_dip_main']         = is_dip_main
     df['caught_by_singleton'] = cond_singleton_ok & ~sustained
     df['caught_by_tier2']     = tier2_p2
 
@@ -226,111 +217,49 @@ def two_pass_baseline_and_detection_v4(df,
 # =============================================================================
 # Visualization
 # =============================================================================
-def plot_diagnostics(df, output_dir, target_name, period_str, event_date=None):
-    fig, axes = plt.subplots(2, 1, figsize=(16, 9), sharex=True, gridspec_kw={'height_ratios': [2, 1]})
+def plot_focused_diagnostics(df, output_dir, target_name, period_str, event_date=None):
+    """
+    Single-panel plot showing observation validity and final outage detection.
+    Valid/invalid observations distinguished by dot size and color.
+    """
+    fig, ax = plt.subplots(figsize=(14, 6))
 
-    title = f'[{target_name} {period_str}] Outage Detection (v4)'
-    if event_date is not None:
-        title += f' | Event: {pd.Timestamp(event_date).strftime("%Y-%m-%d")}'
+    title = f'[{target_name} {period_str}] Outage Detection Focus View'
     fig.suptitle(title, fontsize=15, fontweight='bold')
 
-    outage_days   = df[df['is_dip_main']]
-    singleton_days = df[df['caught_by_singleton']]
+    valid_mask   = df['obs_ratio_main'] >= 0.4
+    invalid_mask = ~valid_mask
 
-    ax = axes[0]
     ax.plot(df.index, df['radiance_main'],
-            color='gray', marker='.', markersize=3, linestyle='-', linewidth=0.8, alpha=0.5, label='Observed (QA≤1)')
-    ax.plot(df.index, df['baseline_dow_p1'],
-            color='lightcoral', linewidth=1.4, linestyle='--', alpha=0.7, label='Baseline Pass 1 (contaminated)')
-    ax.plot(df.index, df['baseline_dow'],
-            color='navy', linewidth=2.2, label='Baseline Pass 2 (clean, final)')
+            color='lightgray', linestyle='-', linewidth=1, zorder=1)
+    ax.scatter(df.index[invalid_mask], df.loc[invalid_mask, 'radiance_main'],
+               color='lightgray', s=5, label='Invalid Obs (obs < 0.4)', zorder=2)
+    ax.scatter(df.index[valid_mask], df.loc[valid_mask, 'radiance_main'],
+               color='dimgray', s=10, label='Valid Obs (obs >= 0.4)', zorder=3)
 
+    outage_days = df[df['is_dip_main']]
     if not outage_days.empty:
         ax.scatter(outage_days.index, outage_days['radiance_main'],
-                   color='red', edgecolor='black', s=55, zorder=5, label=f'Detected outage ({len(outage_days)} days)')
-    if not singleton_days.empty:
-        ax.scatter(singleton_days.index, singleton_days['radiance_main'],
-                   facecolors='none', edgecolor='purple', s=120, linewidth=2, zorder=6,
-                   label=f'Singleton (extreme, {len(singleton_days)} days)')
-    if event_date is not None:
-        ax.axvline(pd.Timestamp(event_date), color='crimson', linestyle=':', linewidth=2, alpha=0.7, label='Event date')
-
-    ax.set_ylabel('Mean Radiance (nW/cm²/sr)', fontsize=11)
-    ax.set_title('Infrastructure Mean Radiance + Baseline', fontsize=12)
-    ax.legend(loc='upper right', fontsize=9)
-    ax.grid(True, linestyle='--', alpha=0.4)
-
-    ax = axes[1]
-    ax.plot(df.index, df['drop_pct_main'],
-            color='brown', linewidth=1, marker='.', markersize=3, label='Drop % (Pass 2)')
-    ax.axhline(50,  color='red',    linestyle='--', alpha=0.4, label='Drop = 50%')
-    ax.axhline(80,  color='purple', linestyle=':',  alpha=0.4, label='Drop = 80% (Pattern A)')
-    ax.set_ylabel('Drop (%)', color='brown', fontsize=11)
-    ax.tick_params(axis='y', labelcolor='brown')
-    ax.grid(True, linestyle='--', alpha=0.4)
-
-    ax2 = ax.twinx()
-    ax2.plot(df.index, df['z_main'], color='purple', linewidth=1, alpha=0.7, label='Z-score (Pass 2)')
-    ax2.axhline(-3.5, color='orange', linestyle='--', alpha=0.5, label='Z = -3.5 (Pattern A)')
-    ax2.axhline(-5.0, color='red',    linestyle=':',  alpha=0.5, label='Z = -5.0 (Pattern B)')
-    ax2.set_ylabel('Z-score', color='purple', fontsize=11)
-    ax2.tick_params(axis='y', labelcolor='purple')
+                   color='red', edgecolor='black', s=40, zorder=5,
+                   label=f'Detected Outage ({len(outage_days)} days)')
 
     if event_date is not None:
-        ax.axvline(pd.Timestamp(event_date), color='crimson', linestyle=':', linewidth=2, alpha=0.7)
+        event_ts   = pd.Timestamp(event_date)
+        window_end = event_ts + pd.Timedelta(days=14)
+        ax.axvline(event_ts, color='crimson', linestyle=':', linewidth=2.5, alpha=0.8, label='Event Date')
+        ax.axvspan(event_ts, window_end, color='crimson', alpha=0.05, label='Monitoring Window (14d)')
 
-    lines1, labels1 = ax.get_legend_handles_labels()
-    lines2, labels2 = ax2.get_legend_handles_labels()
-    ax.legend(lines1 + lines2, labels1 + labels2, loc='lower left', fontsize=9)
-    ax.set_title('Detection Signal (Drop %, Z-score)', fontsize=12)
-    ax.xaxis.set_major_locator(mdates.MonthLocator(interval=2))
+    ax.set_ylabel('Mean Radiance (nW/cm2/sr)', fontsize=11)
+    ax.set_title('Observation Validity & Final Detection Result', fontsize=12)
+    ax.legend(loc='upper right', fontsize=10)
+    ax.grid(True, linestyle='--', alpha=0.3)
+    ax.xaxis.set_major_locator(mdates.MonthLocator(interval=1))
     ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m'))
 
-    plt.tight_layout(rect=[0, 0, 1, 0.96])
-    save_path = os.path.join(output_dir, f"{target_name}_{period_str}_detection_v4.png")
-    plt.savefig(save_path, dpi=180, bbox_inches='tight')
-    plt.close()
-
-
-def plot_event_aligned(df, output_dir, target_name, event_date, window_before=30, window_after=60):
-    """Plot radiance ratio aligned to event date, showing outage and recovery curve."""
-    event_date = pd.Timestamp(event_date)
-    start = event_date - pd.Timedelta(days=window_before)
-    end   = event_date + pd.Timedelta(days=window_after)
-    sub   = df.loc[start:end].copy()
-    if sub.empty:
-        return None
-
-    sub['days_from_event'] = (sub.index - event_date).days
-    sub['radiance_ratio']  = sub['radiance_main'] / sub['baseline_dow']
-
-    fig, ax = plt.subplots(figsize=(13, 6))
-    ax.plot(sub['days_from_event'], sub['radiance_ratio'],
-            color='navy', linewidth=1.5, marker='o', markersize=4, label='Radiance ratio (Pass 2)')
-    ax.axhline(1.0, color='gray',   linestyle='-',  linewidth=0.8, alpha=0.5)
-    ax.axhline(0.9, color='red',    linestyle='--', alpha=0.5, label='90% line')
-    ax.axvline(0,   color='crimson', linestyle=':',  linewidth=2, label='Event date')
-    ax.fill_between(sub['days_from_event'], 0, sub['radiance_ratio'],
-                    where=(sub['radiance_ratio'] < 0.9), alpha=0.25, color='red')
-
-    ax.set_xlabel('Days from Event', fontsize=12)
-    ax.set_ylabel('Radiance Ratio (observed / baseline)', fontsize=12)
-    ax.set_title(f'[{target_name}] Event-aligned Recovery Curve (v4)', fontsize=13)
-    ax.legend(loc='lower right')
-    ax.grid(True, linestyle='--', alpha=0.4)
-    ax.set_ylim(0, max(1.3, sub['radiance_ratio'].max() * 1.1))
-
     plt.tight_layout()
-    save_path = os.path.join(output_dir, f"{target_name}_event_aligned_v4.png")
+    save_path = os.path.join(output_dir, f"{target_name}_{period_str}_focused_view.png")
     plt.savefig(save_path, dpi=180, bbox_inches='tight')
     plt.close()
-
-    checkpoints = [-7, -1, 1, 3, 7, 14, 30, 60]
-    snapshot = {}
-    for d in checkpoints:
-        row = sub[sub['days_from_event'] == d]
-        snapshot[f'D{d:+d}'] = float(row['radiance_ratio'].iloc[0]) if not row.empty else np.nan
-    return snapshot
 
 
 # =============================================================================
@@ -340,7 +269,7 @@ def evaluate_detection(df, event_date, expected_window_days=14):
     """Check whether the pipeline detected an outage within the expected window."""
     event_date = pd.Timestamp(event_date)
     window_end = event_date + pd.Timedelta(days=expected_window_days)
-    window = df.loc[event_date:window_end]
+    window     = df.loc[event_date:window_end]
 
     if window.empty:
         return {'detected': False, 'lag_days': None, 'max_drop_pct': None, 'min_radiance_ratio': None}
@@ -367,11 +296,10 @@ def download_dip_images(col, dip_dates, roi, name, output_dir, max_images=10):
         idx = np.linspace(0, len(dip_dates) - 1, max_images, dtype=int)
         dip_dates = [dip_dates[i] for i in idx]
 
-    image_dir = os.path.join(output_dir, f"{name}_dip_images_v4")
+    image_dir = os.path.join(output_dir, f"{name}_dip_images")
     os.makedirs(image_dir, exist_ok=True)
     vis_params = {
-        'bands': ['DNB_BRDF_Corrected_NTL'],
-        'min': 0, 'max': 60,
+        'bands': ['DNB_BRDF_Corrected_NTL'], 'min': 0, 'max': 60,
         'palette': ['000000', '0000FF', '800080', 'FFFF00', 'FFFFFF']
     }
     region_coords = roi.bounds().getInfo()['coordinates']
@@ -406,7 +334,6 @@ def analyze_outage(target_info):
     end_date   = f"{end_year + 1}-03-01"
     col        = ee.ImageCollection("NASA/VIIRS/002/VNP46A2").filterBounds(roi).filterDate(start_date, end_date)
 
-    # Load ESA WorldCover infrastructure mask (class 50 = built-up)
     try:
         worldcover = ee.ImageCollection("ESA/WorldCover/v200").filterBounds(roi).first()
         infra_mask = worldcover.select('Map').eq(50)
@@ -429,7 +356,8 @@ def analyze_outage(target_info):
         sum_count   = ee.Reducer.sum().combine(reducer2=ee.Reducer.count(), sharedInputs=True)
         stats_light = ee.Image([total_infra, ntl_main, ntl_strict]).reduceRegion(
             reducer=sum_count, geometry=roi, scale=500, maxPixels=1e9)
-        stats_snow  = snow_info.reduceRegion(reducer=ee.Reducer.mean(), geometry=roi, scale=500, maxPixels=1e9)
+        stats_snow  = snow_info.reduceRegion(
+            reducer=ee.Reducer.mean(), geometry=roi, scale=500, maxPixels=1e9)
 
         return ee.Feature(None, {
             'date':              img.date().format('YYYY-MM-dd'),
@@ -454,6 +382,7 @@ def analyze_outage(target_info):
 
     df_full['date'] = pd.to_datetime(df_full['date'])
     df_full = df_full.set_index('date').sort_index().asfreq('D')
+    df_full['weekday_name'] = df_full.index.day_name()
 
     numeric_cols = ['Total_Infra_Count', 'NTL_Main_Sum', 'NTL_Main_Count',
                     'NTL_Strict_Sum', 'NTL_Strict_Count', 'Snow_Cover_Mean']
@@ -466,15 +395,13 @@ def analyze_outage(target_info):
 
     df_full['valid_for_baseline'] = df_full['obs_ratio_main'] >= 0.6
     df_full['valid_for_detect']   = df_full['obs_ratio_main'] >= 0.4
+    df_full['radiance_main']      = df_full['NTL_Main_Sum']   / df_full['NTL_Main_Count']
+    df_full['radiance_strict']    = df_full['NTL_Strict_Sum'] / df_full['NTL_Strict_Count']
 
-    df_full['radiance_main']   = df_full['NTL_Main_Sum']   / df_full['NTL_Main_Count']
-    df_full['radiance_strict'] = df_full['NTL_Strict_Sum'] / df_full['NTL_Strict_Count']
-    df_full['weekday_name']    = df_full.index.day_name()
-
-    radiance_for_base    = df_full['radiance_main'].where(df_full['valid_for_baseline'])
+    radiance_for_base       = df_full['radiance_main'].where(df_full['valid_for_baseline'])
     df_full['baseline_stl'] = stl_baseline(radiance_for_base)
 
-    df_full = two_pass_baseline_and_detection_v4(
+    df_full = two_pass_baseline_and_detection(
         df_full,
         z_thresh=-3.0, drop_thresh_normal=10.0, drop_thresh_extreme=50.0,
         window_weeks=26, snow_thresh=0.2, mask_expand_days=7,
@@ -488,30 +415,22 @@ def analyze_outage(target_info):
     n_singleton = int(df['caught_by_singleton'].sum())
     print(f"[{name}] Detected outage days: {n_dip_main} (singleton: {n_singleton})")
 
-    eval_result = None
-    if event_date is not None:
-        eval_result = evaluate_detection(df, event_date, expected_window_days=14)
+    eval_result = evaluate_detection(df, event_date) if event_date else None
 
-    # Save CSV
     csv_cols = ['Total_Infra_Count', 'NTL_Main_Count', 'obs_ratio_main', 'radiance_main',
                 'baseline_dow', 'drop_pct_main', 'z_main', 'Snow_Cover_Mean', 'weekday_name',
                 'valid_for_detect', 'is_dip_candidate', 'is_dip_main',
                 'caught_by_singleton', 'caught_by_tier2']
-    csv_path = os.path.join(OUTPUT_DIR, f"{name}_{period_str}_diagnostic_v4.csv")
+    csv_path = os.path.join(OUTPUT_DIR, f"{name}_{period_str}_diagnostic.csv")
     df[csv_cols].to_csv(csv_path)
 
-    plot_diagnostics(df, OUTPUT_DIR, name, period_str, event_date=event_date)
-
-    snapshot = None
-    if event_date is not None:
-        snapshot = plot_event_aligned(df, OUTPUT_DIR, name, event_date)
-
-    download_dip_images(col, list(df[df['is_dip_main']].index), roi, name, OUTPUT_DIR, max_images=10)
+    plot_focused_diagnostics(df, OUTPUT_DIR, name, period_str, event_date=event_date)
+    download_dip_images(col, list(df[df['is_dip_main']].index), roi, name, OUTPUT_DIR)
 
     result = {'name': name, 'event_date': event_date,
               'n_dip_days': n_dip_main, 'n_singleton': n_singleton}
-    if eval_result is not None: result.update(eval_result)
-    if snapshot   is not None: result.update(snapshot)
+    if eval_result:
+        result.update(eval_result)
 
     return result
 
@@ -524,16 +443,16 @@ def write_spec_sheet(results, output_dir):
     if not rows:
         return
     df_spec   = pd.DataFrame(rows)
-    spec_path = os.path.join(output_dir, "detection_spec_sheet_v4.csv")
+    spec_path = os.path.join(output_dir, "detection_summary.csv")
     df_spec.to_csv(spec_path, index=False)
-    print(f"\nDetection spec sheet saved: {spec_path}")
+    print(f"\nSummary saved: {spec_path}")
 
     detected = df_spec.get('detected', pd.Series([], dtype=bool))
     if not detected.empty:
         print(f"\n{'='*60}")
-        print(f"v4 Summary (Balanced Detector)")
+        print(f"Detection Summary (Balanced 2-Pass)")
         print(f"{'='*60}")
-        print(f"Detected:   {int(detected.sum())} / {len(df_spec)}")
+        print(f"Detected: {int(detected.sum())} / {len(df_spec)}")
         failed = df_spec[~df_spec['detected'].fillna(False)]
         if not failed.empty:
             print(f"\nMissed cases ({len(failed)}):")
@@ -543,25 +462,55 @@ def write_spec_sheet(results, output_dir):
 
 
 # =============================================================================
-# Entry Point — configure targets here
+# Entry Point
 # =============================================================================
 if __name__ == "__main__":
-    targets = [
-        # Add or remove targets as needed
-        # Format: name, lat, lon, start_year, end_year, event_date (YYYY-MM-DD)
-        {"name": "PuertoRico_SanJuan_Maria",  "lat": 18.4655, "lon": -66.1057, "start_year": 2017, "end_year": 2017, "event_date": "2017-09-20"},
-        {"name": "USA_FL_FortMyers_Ian",      "lat": 26.6406, "lon": -81.8723, "start_year": 2022, "end_year": 2022, "event_date": "2022-09-28"},
-        {"name": "Mexico_Acapulco_Otis",      "lat": 16.8531, "lon": -99.8237, "start_year": 2023, "end_year": 2023, "event_date": "2023-10-25"},
-        {"name": "USA_LA_NewOrleans_Ida",     "lat": 29.9511, "lon": -90.0715, "start_year": 2021, "end_year": 2021, "event_date": "2021-08-29"},
-        {"name": "Turkey_Antakya_Earthquake", "lat": 36.2021, "lon": 36.1603,  "start_year": 2023, "end_year": 2023, "event_date": "2023-02-06"},
+    targets_2023 = [
+        {"name": "Mexico_Acapulco_Otis",       "lat": 16.8531,  "lon": -99.8237,  "start_year": 2023, "end_year": 2023, "event_date": "2023-10-25"},
+        {"name": "USA_FL_BigBend_Idalia",       "lat": 29.9072,  "lon": -83.5683,  "start_year": 2023, "end_year": 2023, "event_date": "2023-08-30"},
+        {"name": "Myanmar_Sittwe_Mocha",        "lat": 20.1444,  "lon":  92.8986,  "start_year": 2023, "end_year": 2023, "event_date": "2023-05-14"},
+        {"name": "Malawi_Blantyre_Freddy",      "lat": -15.7861, "lon":  35.0058,  "start_year": 2023, "end_year": 2023, "event_date": "2023-03-12"},
+        {"name": "Guam_Dededo_Mawar",           "lat": 13.5230,  "lon": 144.8322,  "start_year": 2023, "end_year": 2023, "event_date": "2023-05-24"},
+        {"name": "NewZealand_Napier_Gabrielle", "lat": -39.4928, "lon": 176.9120,  "start_year": 2023, "end_year": 2023, "event_date": "2023-02-14"},
+        {"name": "China_Quanzhou_Doksuri",      "lat": 24.8739,  "lon": 118.6758,  "start_year": 2023, "end_year": 2023, "event_date": "2023-07-28"},
+        {"name": "India_Gujarat_Biparjoy",      "lat": 23.2300,  "lon":  68.6100,  "start_year": 2023, "end_year": 2023, "event_date": "2023-06-15"},
+        {"name": "Taiwan_Taitung_Haikui",       "lat": 23.0900,  "lon": 121.3600,  "start_year": 2023, "end_year": 2023, "event_date": "2023-09-03"},
+        {"name": "Australia_Queensland_Jasper", "lat": -16.3000, "lon": 145.4100,  "start_year": 2023, "end_year": 2023, "event_date": "2023-12-13"},
     ]
 
-    print("NTL Power Outage Detection — v4 (Balanced)")
+    targets_2024 = [
+        {"name": "USA_TX_Houston_Beryl",        "lat": 29.7604,  "lon": -95.3698,  "start_year": 2024, "end_year": 2024, "event_date": "2024-07-08"},
+        {"name": "Vietnam_HaiPhong_Yagi",       "lat": 20.8449,  "lon": 106.6881,  "start_year": 2024, "end_year": 2024, "event_date": "2024-09-07"},
+        {"name": "USA_NC_Asheville_Helene",     "lat": 35.5951,  "lon": -82.5515,  "start_year": 2024, "end_year": 2024, "event_date": "2024-09-27"},
+        {"name": "USA_FL_Tampa_Milton",         "lat": 27.9506,  "lon": -82.4572,  "start_year": 2024, "end_year": 2024, "event_date": "2024-10-10"},
+        {"name": "Taiwan_Yilan_Gaemi",          "lat": 24.5800,  "lon": 121.8200,  "start_year": 2024, "end_year": 2024, "event_date": "2024-07-24"},
+        {"name": "Bangladesh_Khulna_Remal",     "lat": 21.8400,  "lon":  89.8400,  "start_year": 2024, "end_year": 2024, "event_date": "2024-05-26"},
+        {"name": "USA_LA_MorganCity_Francine",  "lat": 29.6900,  "lon": -91.2000,  "start_year": 2024, "end_year": 2024, "event_date": "2024-09-11"},
+        {"name": "Japan_Kyushu_Shanshan",       "lat": 31.5900,  "lon": 130.6500,  "start_year": 2024, "end_year": 2024, "event_date": "2024-08-29"},
+        {"name": "Cuba_Guantanamo_Oscar",       "lat": 20.1400,  "lon": -74.4400,  "start_year": 2024, "end_year": 2024, "event_date": "2024-10-20"},
+        {"name": "Taiwan_Kaohsiung_Krathon",    "lat": 22.6200,  "lon": 120.3100,  "start_year": 2024, "end_year": 2024, "event_date": "2024-10-03"},
+    ]
+
+    targets_misc = [
+        {"name": "Jamaica_BlackRiver_Melissa",  "lat": 18.0200,  "lon": -77.8400,  "start_year": 2025, "end_year": 2025, "event_date": "2025-10-30"},
+        {"name": "Philippines_Luzon_Fungwong",  "lat": 17.5000,  "lon": 121.8000,  "start_year": 2025, "end_year": 2025, "event_date": "2025-11-09"},
+        {"name": "USA_FL_Miami_Nadine",         "lat": 25.7600,  "lon": -80.1900,  "start_year": 2025, "end_year": 2025, "event_date": "2025-08-15"},
+        {"name": "Japan_Okinawa_Danas",         "lat": 26.2100,  "lon": 127.6800,  "start_year": 2025, "end_year": 2025, "event_date": "2025-07-22"},
+        {"name": "Madagascar_Toamasina_Carlos", "lat": -18.1400, "lon":  49.3900,  "start_year": 2025, "end_year": 2025, "event_date": "2025-02-18"},
+        {"name": "Taiwan_Hualien_Nari",         "lat": 23.9700,  "lon": 121.6000,  "start_year": 2025, "end_year": 2025, "event_date": "2025-09-12"},
+        {"name": "Mexico_Cancun_Beatriz",       "lat": 21.1600,  "lon": -86.8500,  "start_year": 2025, "end_year": 2025, "event_date": "2025-06-25"},
+        {"name": "India_Odisha_Gati",           "lat": 19.8100,  "lon":  85.8300,  "start_year": 2025, "end_year": 2025, "event_date": "2025-05-20"},
+        {"name": "Australia_Darwin_Paddy",      "lat": -12.4600, "lon": 130.8400,  "start_year": 2025, "end_year": 2025, "event_date": "2025-03-10"},
+        {"name": "Fiji_Suva_Kina",              "lat": -18.1200, "lon": 178.4200,  "start_year": 2025, "end_year": 2025, "event_date": "2025-01-14"},
+        {"name": "PuertoRico_SanJuan_Maria",    "lat": 18.4655,  "lon": -66.1057,  "start_year": 2017, "end_year": 2017, "event_date": "2017-09-20"},
+        {"name": "USA_FL_FortMyers_Ian",        "lat": 26.6406,  "lon": -81.8723,  "start_year": 2022, "end_year": 2022, "event_date": "2022-09-28"},
+    ]
+
+    targets = targets_2023 + targets_2024 + targets_misc
+
+    print("NTL Blackout Tracker — Balanced 2-Pass Detector")
     print("=" * 60)
     print(f"Targets: {len(targets)}")
-    print("Fix 1: Singleton OR patterns (A: drop>80 / B: drop>60)")
-    print("Fix 2: Sustained window 3-day, min 2-day")
-    print("Fix 3: obs_ratio relaxed to 0.4 / Tier2 backdoor 0.1")
     print("=" * 60)
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:

@@ -1,0 +1,36 @@
+# =============================================================================
+# .gitignore — NTL Power Outage Detection
+# =============================================================================
+
+# Output files (too large / machine-specific)
+outputs/
+*.png
+*.jpg
+
+# Data files (may contain sensitive location info)
+data/*.csv
+!data/target_events.csv   # Keep the sample events list
+
+# Local config overrides (API keys, personal paths)
+config_local.py
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# Jupyter / Colab
+.ipynb_checkpoints/
+*.ipynb
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
